@@ -10,7 +10,7 @@ from skfda.preprocessing.dim_reduction import FPCA
 from sklearn.preprocessing import StandardScaler
 
 
-def create_fdatagrid(data: np.ndarray, n_basis: int = None, smoothing_penalty: float = 0.1):
+def create_fdatagrid(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
     """
     Smooth a multivariate time series (n_samples, n_features, window_size) into functional data.
     data shape: (n_samples, n_features, window_size) or (n_samples, window_size) for univariate.
@@ -25,7 +25,7 @@ def create_fdatagrid(data: np.ndarray, n_basis: int = None, smoothing_penalty: f
         n_basis = min(15, window_size // 4)
 
     basis = BSplineBasis(n_basis=n_basis, domain_range=(0, window_size - 1))
-    smoother = BasisSmoother(basis, smoothing_penalty=smoothing_penalty)
+    smoother = BasisSmoother(basis, smoothing_parameter=smoothing_parameter)
 
     # For multivariate, smooth each feature separately and combine
     smoothed_curves = []
@@ -73,14 +73,14 @@ def extract_shape_features(fdata: FDataGrid, fpca: FPCA, include_derivatives: bo
     return pd.DataFrame(feature_dict)
 
 
-def smooth_single_curve(data: np.ndarray, n_basis: int = None, smoothing_penalty: float = 0.1):
+def smooth_single_curve(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
     """Smooth a single curve (window_size,) and return the smoothed values."""
     window_size = len(data)
     if n_basis is None:
         n_basis = min(15, window_size // 4)
 
     basis = BSplineBasis(n_basis=n_basis, domain_range=(0, window_size - 1))
-    smoother = BasisSmoother(basis, smoothing_penalty=smoothing_penalty)
+    smoother = BasisSmoother(basis, smoothing_parameter=smoothing_parameter)
     fdata = FDataGrid(data[np.newaxis, :], sample_points=np.arange(window_size))
     smoothed = smoother.fit_transform(fdata)
     return smoothed.data_matrix.flatten()
