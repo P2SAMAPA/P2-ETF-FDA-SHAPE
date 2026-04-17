@@ -9,3 +9,4 @@ streamlit>=1.30.0
 pandas_market_calendars>=4.3.0
 pyarrow>=14.0.0
 pytz>=2024.1
+FDApy>=1.0.0
