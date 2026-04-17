@@ -1,10 +1,23 @@
 """
 Functional Data Analysis: B‑spline smoothing, fPCA, and shape features.
 """
+
 import numpy as np
 import pandas as pd
 from scipy.interpolate import splrep, splev
 from FDApy.preprocessing import UFPCA
+from FDApy.representation import DenseFunctionalData, DenseArgvals, DenseValues
+
+
+def _to_functional_data(array: np.ndarray) -> DenseFunctionalData:
+    """
+    Convert a 2D numpy array of shape (n_samples, n_points) into
+    a DenseFunctionalData object required by FDApy >= 1.0.0.
+    """
+    n_points = array.shape[1]
+    argvals = DenseArgvals({'input_dim_0': np.linspace(0, 1, n_points)})
+    values = DenseValues(array)
+    return DenseFunctionalData(argvals, values)
 
 
 def smooth_univariate(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
@@ -35,8 +48,8 @@ def create_multivariate_fdata(data: np.ndarray, n_basis: int = None, smoothing_p
         data = data[:, np.newaxis, :]
 
     n_samples, n_features, window_size = data.shape
-
     smoothed_features = []
+
     for i in range(n_features):
         feature_data = data[:, i, :]  # (n_samples, window_size)
         smoothed = smooth_univariate(feature_data, n_basis, smoothing_parameter)
@@ -48,7 +61,11 @@ def create_multivariate_fdata(data: np.ndarray, n_basis: int = None, smoothing_p
 
 def fit_fpca(smoothed_data: np.ndarray, n_components: int = 3, refit: bool = True, fpca_models: list = None):
     """
-    Fit univariate FPCA per feature using FDApy.
+    Fit univariate FPCA per feature using FDApy >= 1.0.0.
+
+    Converts each feature's numpy array into a DenseFunctionalData object
+    before calling UFPCA.fit() / UFPCA.transform().
+
     If refit=False, use provided fpca_models to transform data.
     Returns a list of fitted models and a list of score arrays.
     """
@@ -57,23 +74,32 @@ def fit_fpca(smoothed_data: np.ndarray, n_components: int = 3, refit: bool = Tru
     if refit:
         fpca_models = []
         scores_list = []
+
         for i in range(n_features):
-            feature_data = smoothed_data[:, i, :]  # (n_samples, n_points)
+            feature_array = smoothed_data[:, i, :]          # (n_samples, n_points)
+            feature_fd = _to_functional_data(feature_array)  # DenseFunctionalData
+
             ufpca = UFPCA(n_components=n_components)
-            ufpca.fit(feature_data)
+            ufpca.fit(feature_fd)
             fpca_models.append(ufpca)
-            scores = ufpca.transform(feature_data)
+
+            scores = ufpca.transform(feature_fd)             # (n_samples, n_components)
             scores_list.append(scores)
+
         return fpca_models, scores_list
+
     else:
         if fpca_models is None:
             raise ValueError("Must provide fpca_models when refit=False")
+
         scores_list = []
         for i in range(n_features):
-            feature_data = smoothed_data[:, i, :]
+            feature_array = smoothed_data[:, i, :]
+            feature_fd = _to_functional_data(feature_array)
             ufpca = fpca_models[i]
-            scores = ufpca.transform(feature_data)
+            scores = ufpca.transform(feature_fd)
             scores_list.append(scores)
+
         return fpca_models, scores_list
 
 
@@ -99,10 +125,8 @@ def extract_shape_features(smoothed_data: np.ndarray, fpca_models: list, scores_
             feature_data = smoothed_data[:, feat_idx, :]
             deriv1 = np.gradient(feature_data, dx, axis=1)
             deriv2 = np.gradient(deriv1, dx, axis=1)
-
             mean_deriv1 = deriv1.mean(axis=1)
             mean_deriv2 = deriv2.mean(axis=1)
-
             feature_dict[f"deriv1_{feat_idx}"] = mean_deriv1
             feature_dict[f"deriv2_{feat_idx}"] = mean_deriv2
 
