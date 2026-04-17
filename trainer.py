@@ -1,6 +1,7 @@
 """
 Global (with CV window selection) and Adaptive Window training.
 """
+
 import os
 import json
 import numpy as np
@@ -44,13 +45,51 @@ def create_window_samples(returns: pd.DataFrame, window_size: int):
     data = returns.values
     samples = []
     for i in range(len(data) - window_size + 1):
-        samples.append(data[i:i+window_size].T)  # (n_features, window_size)
+        samples.append(data[i:i + window_size].T)  # (n_features, window_size)
     return np.array(samples)  # (n_samples, n_features, window_size)
+
+
+def _get_latest_prediction(full_returns: pd.DataFrame, window: int,
+                            fpca_models: list, predictors: dict,
+                            n_basis: int) -> dict:
+    """
+    Build the single latest-window feature vector from the tail of full_returns
+    and return per-ticker predicted returns.
+
+    This is separated out so both train_global and train_adaptive can use it
+    without being affected by the test split having fewer rows than `window`.
+    """
+    # Take the last `window` rows of the full dataset — always available
+    latest_window = full_returns.iloc[-window:]
+    if len(latest_window) < window:
+        return {}
+
+    latest_array = latest_window.values.T[np.newaxis, :, :]  # (1, n_features, window)
+    latest_smoothed = create_multivariate_fdata(
+        latest_array, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
+    )
+    _, latest_scores = fit_fpca(
+        latest_smoothed, n_components=config.FPCA_COMPONENTS,
+        refit=False, fpca_models=fpca_models
+    )
+    latest_features = extract_shape_features(
+        latest_smoothed, fpca_models, latest_scores,
+        include_derivatives=config.INCLUDE_DERIVATIVES
+    )
+
+    pred_returns = {}
+    for ticker, pred in predictors.items():
+        try:
+            pred_returns[ticker] = pred.predict(latest_features)[0]
+        except Exception:
+            pred_returns[ticker] = 0.0
+    return pred_returns
 
 
 def train_global(universe: str, returns: pd.DataFrame) -> dict:
     print(f"\n--- Global Training: {universe} ---")
     tickers = [col.replace("_ret", "") for col in returns.columns]
+
     total_days = len(returns)
     train_end = int(total_days * config.TRAIN_RATIO)
     val_end = train_end + int(total_days * config.VAL_RATIO)
@@ -62,8 +101,8 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
     # ----- Cross‑validated window selection -----
     best_window = None
     best_val_mse = float('inf')
-
     print("  Selecting optimal window via cross‑validation...")
+
     for window in config.CANDIDATE_WINDOWS:
         if len(train_ret) < window + 20:
             continue
@@ -75,20 +114,30 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
         if len(train_samples) < 10 or len(val_samples) < 5:
             continue
 
-        # FDApy pipeline
-        train_smoothed = create_multivariate_fdata(train_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
+        train_smoothed = create_multivariate_fdata(
+            train_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
+        )
         fpca_models, train_scores_list = fit_fpca(train_smoothed, n_components=config.FPCA_COMPONENTS)
-        train_features = extract_shape_features(train_smoothed, fpca_models, train_scores_list, include_derivatives=config.INCLUDE_DERIVATIVES)
+        train_features = extract_shape_features(
+            train_smoothed, fpca_models, train_scores_list,
+            include_derivatives=config.INCLUDE_DERIVATIVES
+        )
 
-        val_smoothed = create_multivariate_fdata(val_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
-        _, val_scores_list = fit_fpca(val_smoothed, n_components=config.FPCA_COMPONENTS, refit=False, fpca_models=fpca_models)
-        val_features = extract_shape_features(val_smoothed, fpca_models, val_scores_list, include_derivatives=config.INCLUDE_DERIVATIVES)
+        val_smoothed = create_multivariate_fdata(
+            val_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
+        )
+        _, val_scores_list = fit_fpca(
+            val_smoothed, n_components=config.FPCA_COMPONENTS,
+            refit=False, fpca_models=fpca_models
+        )
+        val_features = extract_shape_features(
+            val_smoothed, fpca_models, val_scores_list,
+            include_derivatives=config.INCLUDE_DERIVATIVES
+        )
 
-        # Targets: next‑day returns for each ETF
-        y_train = train_ret.shift(-1).iloc[window-1:len(train_samples)+window-1].values
-        y_val = val_ret.shift(-1).iloc[window-1:len(val_samples)+window-1].values
+        y_train = train_ret.shift(-1).iloc[window - 1:len(train_samples) + window - 1].values
+        y_val = val_ret.shift(-1).iloc[window - 1:len(val_samples) + window - 1].values
 
-        # Train one Ridge per ETF
         val_preds = np.zeros_like(y_val)
         for i, ticker in enumerate(tickers):
             predictor = ShapePredictor()
@@ -104,25 +153,28 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
 
         mse = mean_squared_error(y_val[~np.isnan(y_val)], val_preds[~np.isnan(y_val)])
         print(f"    Window {window:3d} -> Validation MSE: {mse:.6f}")
-
         if mse < best_val_mse:
             best_val_mse = mse
             best_window = window
 
     if best_window is None:
         best_window = 60  # fallback
-
     print(f"  Selected optimal window: {best_window} days (MSE: {best_val_mse:.6f})")
 
     # ----- Train final model on train+val -----
     train_val_ret = pd.concat([train_ret, val_ret])
     n_basis = min(15, best_window // config.N_BASIS_FACTOR)
     samples = create_window_samples(train_val_ret, best_window)
-    smoothed_data = create_multivariate_fdata(samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
+    smoothed_data = create_multivariate_fdata(
+        samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
+    )
     fpca_models, scores_list = fit_fpca(smoothed_data, n_components=config.FPCA_COMPONENTS)
-    features = extract_shape_features(smoothed_data, fpca_models, scores_list, include_derivatives=config.INCLUDE_DERIVATIVES)
-    y_all = train_val_ret.shift(-1).iloc[best_window-1:len(samples)+best_window-1].values
+    features = extract_shape_features(
+        smoothed_data, fpca_models, scores_list,
+        include_derivatives=config.INCLUDE_DERIVATIVES
+    )
 
+    y_all = train_val_ret.shift(-1).iloc[best_window - 1:len(samples) + best_window - 1].values
     predictors = {}
     for i, ticker in enumerate(tickers):
         valid = ~np.isnan(y_all[:, i])
@@ -133,21 +185,14 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
         pred = ShapePredictor().fit(X_tr, y_tr)
         predictors[ticker] = pred
 
-    # ----- Predict on test set -----
-    test_samples = create_window_samples(test_ret, best_window)
-    if len(test_samples) > 0:
-        test_smoothed = create_multivariate_fdata(test_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
-        _, test_scores_list = fit_fpca(test_smoothed, n_components=config.FPCA_COMPONENTS, refit=False, fpca_models=fpca_models)
-        test_features = extract_shape_features(test_smoothed, fpca_models, test_scores_list, include_derivatives=config.INCLUDE_DERIVATIVES)
-        latest_features = test_features.iloc[-1:]
+    # ----- Predict using the last window of the FULL returns -----
+    # FIX: use full `returns` tail instead of test_ret, which is often shorter
+    # than best_window and produces zero predictions.
+    pred_returns = _get_latest_prediction(
+        returns, best_window, fpca_models, predictors, n_basis
+    )
 
-        pred_returns = {}
-        for ticker, pred in predictors.items():
-            try:
-                pred_returns[ticker] = pred.predict(latest_features)[0]
-            except:
-                pred_returns[ticker] = -np.inf
-
+    if pred_returns:
         best_ticker = max(pred_returns, key=pred_returns.get)
         best_pred_return = pred_returns[best_ticker]
     else:
@@ -156,7 +201,8 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
         pred_returns = {t: 0.0 for t in tickers}
 
     metrics = evaluate_etf(best_ticker, test_ret)
-    print(f"  Selected ETF: {best_ticker}, Predicted Return: {best_pred_return*100:.2f}%")
+    print(f"  Selected ETF: {best_ticker}, Predicted Return: {best_pred_return * 100:.2f}%")
+
     return {
         "ticker": best_ticker,
         "pred_return": best_pred_return,
@@ -171,12 +217,14 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
 def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
     print(f"\n--- Adaptive Training: {universe} ---")
     tickers = [col.replace("_ret", "") for col in returns.columns]
+
     cp_date = universe_adaptive_start_date(returns)
     print(f"  Adaptive window starts: {cp_date.date()}")
 
     end_date = returns.index[-1] - pd.Timedelta(days=config.MIN_TEST_DAYS)
     if end_date <= cp_date:
         end_date = returns.index[-1] - pd.Timedelta(days=10)
+
     train_mask = (returns.index >= cp_date) & (returns.index <= end_date)
     train_ret = returns.loc[train_mask]
     test_ret = returns.loc[returns.index > end_date]
@@ -186,15 +234,20 @@ def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
         return train_global(universe, returns)
 
     lookback = min(config.ADAPTIVE_MAX_LOOKBACK, (returns.index[-1] - cp_date).days)
-    lookback = max(lookback, 20)  # minimum
-
+    lookback = max(lookback, 20)
     n_basis = min(15, lookback // config.N_BASIS_FACTOR)
-    samples = create_window_samples(train_ret, lookback)
-    smoothed_data = create_multivariate_fdata(samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
-    fpca_models, scores_list = fit_fpca(smoothed_data, n_components=config.FPCA_COMPONENTS)
-    features = extract_shape_features(smoothed_data, fpca_models, scores_list, include_derivatives=config.INCLUDE_DERIVATIVES)
-    y_train = train_ret.shift(-1).iloc[lookback-1:len(samples)+lookback-1].values
 
+    samples = create_window_samples(train_ret, lookback)
+    smoothed_data = create_multivariate_fdata(
+        samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
+    )
+    fpca_models, scores_list = fit_fpca(smoothed_data, n_components=config.FPCA_COMPONENTS)
+    features = extract_shape_features(
+        smoothed_data, fpca_models, scores_list,
+        include_derivatives=config.INCLUDE_DERIVATIVES
+    )
+
+    y_train = train_ret.shift(-1).iloc[lookback - 1:len(samples) + lookback - 1].values
     predictors = {}
     for i, ticker in enumerate(tickers):
         valid = ~np.isnan(y_train[:, i])
@@ -205,20 +258,15 @@ def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
         pred = ShapePredictor().fit(X_tr, y_tr)
         predictors[ticker] = pred
 
-    test_samples = create_window_samples(test_ret, lookback)
-    if len(test_samples) > 0:
-        test_smoothed = create_multivariate_fdata(test_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
-        _, test_scores_list = fit_fpca(test_smoothed, n_components=config.FPCA_COMPONENTS, refit=False, fpca_models=fpca_models)
-        test_features = extract_shape_features(test_smoothed, fpca_models, test_scores_list, include_derivatives=config.INCLUDE_DERIVATIVES)
-        latest_features = test_features.iloc[-1:]
+    # ----- Predict using the last window of the FULL returns -----
+    # FIX: use full `returns` tail instead of test_ret, which has only
+    # MIN_TEST_DAYS (~63) rows while lookback is up to 252.
+    # test_ret < lookback => create_window_samples returns 0 samples => pred = 0.0
+    pred_returns = _get_latest_prediction(
+        returns, lookback, fpca_models, predictors, n_basis
+    )
 
-        pred_returns = {}
-        for ticker, pred in predictors.items():
-            try:
-                pred_returns[ticker] = pred.predict(latest_features)[0]
-            except:
-                pred_returns[ticker] = -np.inf
-
+    if pred_returns:
         best_ticker = max(pred_returns, key=pred_returns.get)
         best_pred_return = pred_returns[best_ticker]
     else:
@@ -227,7 +275,8 @@ def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
         pred_returns = {t: 0.0 for t in tickers}
 
     metrics = evaluate_etf(best_ticker, test_ret) if len(test_ret) > 0 else {}
-    print(f"  Selected ETF: {best_ticker}, Predicted Return: {best_pred_return*100:.2f}%")
+    print(f"  Selected ETF: {best_ticker}, Predicted Return: {best_pred_return * 100:.2f}%")
+
     return {
         "ticker": best_ticker,
         "pred_return": best_pred_return,
@@ -247,13 +296,14 @@ def run_training():
 
     all_results = {}
     for universe in ["fi", "equity", "combined"]:
-        print(f"\n{'='*50}\nProcessing {universe.upper()}\n{'='*50}")
+        print(f"\n{'=' * 50}\nProcessing {universe.upper()}\n{'=' * 50}")
         returns = get_universe_returns(df, universe)
         if returns.empty:
             continue
         global_res = train_global(universe, returns)
         adaptive_res = train_adaptive(universe, returns)
         all_results[universe] = {"global": global_res, "adaptive": adaptive_res}
+
     return all_results
 
 
