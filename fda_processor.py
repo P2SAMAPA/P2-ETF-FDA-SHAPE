@@ -3,96 +3,107 @@ Functional Data Analysis: B‑spline smoothing, fPCA, and shape features.
 """
 import numpy as np
 import pandas as pd
-from skfda import FDataGrid, concatenate
-from skfda.representation.basis import BSplineBasis
-from skfda.preprocessing.smoothing import BasisSmoother
-from skfda.preprocessing.dim_reduction import FPCA
+from FDApy.representation import DenseArgvals
+from FDApy.preprocessing import UFPCA
+from FDApy.simulation import KarhunenLoeve
+from scipy.interpolate import BSpline, make_lsq_spline
 
 
-def smooth_univariate(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
+def smooth_univariate(data: np.ndarray, n_basis: int = 15, smoothing_parameter: float = 0.1):
     """
-    Smooth univariate data of shape (n_samples, window_size).
-    Returns an FDataGrid of smoothed curves.
+    Smooth univariate data of shape (n_samples, window_size) using B-splines.
+    Returns a 2D array of smoothed curves.
     """
     n_samples, window_size = data.shape
-    if n_basis is None:
-        n_basis = min(15, window_size // 4)
-
-    basis = BSplineBasis(n_basis=n_basis, domain_range=(0, window_size - 1))
-    smoother = BasisSmoother(basis, smoothing_parameter=smoothing_parameter)
-    fdata = FDataGrid(data, sample_points=np.arange(window_size))
-    return smoother.fit_transform(fdata)
+    x = np.linspace(0, 1, window_size)
+    
+    # Create knot vector
+    knots = np.linspace(0, 1, n_basis - 2)[1:-1]
+    t = np.r_[np.zeros(3), knots, np.ones(3)]
+    
+    smoothed = np.zeros_like(data)
+    for i in range(n_samples):
+        # Fit smoothing spline with penalty on second derivative
+        spline = make_lsq_spline(x, data[i], t, k=3)
+        smoothed[i] = spline(x)
+    
+    return smoothed
 
 
 def create_multivariate_fdata(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
     """
     Smooth multivariate data of shape (n_samples, n_features, window_size).
-    Returns a multivariate FDataGrid.
+    Returns a smoothed array and argvals object for FDApy.
     """
-    # Ensure data is 3D: (n_samples, n_features, window_size)
     if data.ndim == 2:
         data = data[:, np.newaxis, :]
 
     n_samples, n_features, window_size = data.shape
 
-    # Smooth each feature independently
-    smoothed_fdatas = []
+    if n_basis is None:
+        n_basis = min(15, window_size // 4)
+
+    smoothed_features = []
     for i in range(n_features):
-        feature_data = data[:, i, :]  # shape: (n_samples, window_size)
-        smoothed_fdata = smooth_univariate(feature_data, n_basis, smoothing_parameter)
-        smoothed_fdatas.append(smoothed_fdata)
+        feature_data = data[:, i, :]  # (n_samples, window_size)
+        smoothed = smooth_univariate(feature_data, n_basis, smoothing_parameter)
+        smoothed_features.append(smoothed)
 
-    # Combine into a single multivariate FDataGrid
-    if n_features == 1:
-        return smoothed_fdatas[0]
-    else:
-        return concatenate(smoothed_fdatas, as_coordinates=True)
-
-
-def fit_fpca(fdata: FDataGrid, n_components: int = 3):
-    """Fit functional PCA and return the fitted FPCA object."""
-    fpca = FPCA(n_components=n_components)
-    fpca.fit(fdata)
-    return fpca
+    smoothed_array = np.stack(smoothed_features, axis=1)  # (n_samples, n_features, window_size)
+    
+    # Create argvals object for FDApy
+    argvals = DenseArgvals({'input_dim_0': np.linspace(0, 1, window_size)})
+    
+    return smoothed_array, argvals
 
 
-def extract_shape_features(fdata: FDataGrid, fpca: FPCA, include_derivatives: bool = True):
+def fit_fpca(smoothed_data: np.ndarray, argvals, n_components: int = 3):
+    """Fit univariate FPCA using FDApy."""
+    # FDApy's UFPCA expects data as a list of 2D arrays (one per feature)
+    # For multivariate, we can fit separate UFPCA per feature
+    n_samples, n_features, n_points = smoothed_data.shape
+    
+    fpca_models = []
+    scores_list = []
+    
+    for i in range(n_features):
+        feature_data = smoothed_data[:, i, :]  # (n_samples, n_points)
+        ufpca = UFPCA(n_components=n_components)
+        ufpca.fit(feature_data, argvals=argvals)
+        fpca_models.append(ufpca)
+        scores = ufpca.transform(feature_data, argvals=argvals)
+        scores_list.append(scores)
+    
+    return fpca_models, scores_list
+
+
+def extract_shape_features(smoothed_data: np.ndarray, argvals, fpca_models: list, scores_list: list, include_derivatives: bool = True):
     """
     Extract shape features: fPCA scores, and optionally first/second derivative values.
     Returns a DataFrame of features.
     """
-    scores = fpca.transform(fdata)  # (n_samples, n_components)
-
-    feature_dict = {f"fPC{i+1}": scores[:, i] for i in range(scores.shape[1])}
-
+    n_samples, n_features, n_points = smoothed_data.shape
+    
+    # Build feature dictionary from fPCA scores
+    feature_dict = {}
+    for feat_idx in range(n_features):
+        scores = scores_list[feat_idx]  # (n_samples, n_components)
+        for comp_idx in range(scores.shape[1]):
+            feature_dict[f"fPC{comp_idx+1}_feat{feat_idx}"] = scores[:, comp_idx]
+    
     if include_derivatives:
-        deriv1 = fdata.derivative()
-        deriv2 = deriv1.derivative()
-
-        # Derivative data matrices have shape (n_samples, n_features, n_points)
-        mean_deriv1 = deriv1.data_matrix.mean(axis=2)  # (n_samples, n_features)
-        mean_deriv2 = deriv2.data_matrix.mean(axis=2)
-
-        # Handle univariate case where shape might be squeezed to (n_samples,)
-        if mean_deriv1.ndim == 1:
-            mean_deriv1 = mean_deriv1[:, np.newaxis]
-            mean_deriv2 = mean_deriv2[:, np.newaxis]
-
-        for i in range(mean_deriv1.shape[1]):
-            feature_dict[f"deriv1_{i}"] = mean_deriv1[:, i]
-            feature_dict[f"deriv2_{i}"] = mean_deriv2[:, i]
-
+        x = np.linspace(0, 1, n_points)
+        dx = x[1] - x[0]
+        
+        for feat_idx in range(n_features):
+            feature_data = smoothed_data[:, feat_idx, :]
+            deriv1 = np.gradient(feature_data, dx, axis=1)
+            deriv2 = np.gradient(deriv1, dx, axis=1)
+            
+            mean_deriv1 = deriv1.mean(axis=1)
+            mean_deriv2 = deriv2.mean(axis=1)
+            
+            feature_dict[f"deriv1_{feat_idx}"] = mean_deriv1
+            feature_dict[f"deriv2_{feat_idx}"] = mean_deriv2
+    
     return pd.DataFrame(feature_dict)
-
-
-def smooth_single_curve(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
-    """Smooth a single curve (window_size,) and return the smoothed values."""
-    window_size = len(data)
-    if n_basis is None:
-        n_basis = min(15, window_size // 4)
-
-    basis = BSplineBasis(n_basis=n_basis, domain_range=(0, window_size - 1))
-    smoother = BasisSmoother(basis, smoothing_parameter=smoothing_parameter)
-    fdata = FDataGrid(data[np.newaxis, :], sample_points=np.arange(window_size))
-    smoothed = smoother.fit_transform(fdata)
-    return smoothed.data_matrix.flatten()
