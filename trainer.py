@@ -77,18 +77,18 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
         if len(train_samples) < 10 or len(val_samples) < 5:
             continue
 
-        train_fdata = create_fdatagrid(train_samples, n_basis=n_basis, smoothing_penalty=config.SMOOTHING_PENALTY)
+        train_fdata = create_fdatagrid(train_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
         fpca = fit_fpca(train_fdata, n_components=config.FPCA_COMPONENTS)
 
         train_features = extract_shape_features(train_fdata, fpca, include_derivatives=config.INCLUDE_DERIVATIVES)
-        val_fdata = create_fdatagrid(val_samples, n_basis=n_basis, smoothing_penalty=config.SMOOTHING_PENALTY)
+        val_fdata = create_fdatagrid(val_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
         val_features = extract_shape_features(val_fdata, fpca, include_derivatives=config.INCLUDE_DERIVATIVES)
 
         # Targets: next‑day returns for each ETF
         y_train = train_ret.shift(-1).iloc[window-1:len(train_samples)+window-1].values
         y_val = val_ret.shift(-1).iloc[window-1:len(val_samples)+window-1].values
 
-        # Train one Ridge per ETF (or a single multi‑output; we'll do per‑ETF for simplicity)
+        # Train one Ridge per ETF
         val_preds = np.zeros_like(y_val)
         for i, ticker in enumerate(tickers):
             predictor = ShapePredictor()
@@ -118,7 +118,7 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
     train_val_ret = pd.concat([train_ret, val_ret])
     n_basis = min(15, best_window // config.N_BASIS_FACTOR)
     samples = create_window_samples(train_val_ret, best_window)
-    fdata = create_fdatagrid(samples, n_basis=n_basis, smoothing_penalty=config.SMOOTHING_PENALTY)
+    fdata = create_fdatagrid(samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
     fpca = fit_fpca(fdata, n_components=config.FPCA_COMPONENTS)
     features = extract_shape_features(fdata, fpca, include_derivatives=config.INCLUDE_DERIVATIVES)
     y_all = train_val_ret.shift(-1).iloc[best_window-1:len(samples)+best_window-1].values
@@ -136,7 +136,7 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
     # ----- Predict on test set -----
     test_samples = create_window_samples(test_ret, best_window)
     if len(test_samples) > 0:
-        test_fdata = create_fdatagrid(test_samples, n_basis=n_basis, smoothing_penalty=config.SMOOTHING_PENALTY)
+        test_fdata = create_fdatagrid(test_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
         test_features = extract_shape_features(test_fdata, fpca, include_derivatives=config.INCLUDE_DERIVATIVES)
         latest_features = test_features.iloc[-1:]
 
@@ -189,7 +189,7 @@ def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
 
     n_basis = min(15, lookback // config.N_BASIS_FACTOR)
     samples = create_window_samples(train_ret, lookback)
-    fdata = create_fdatagrid(samples, n_basis=n_basis, smoothing_penalty=config.SMOOTHING_PENALTY)
+    fdata = create_fdatagrid(samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
     fpca = fit_fpca(fdata, n_components=config.FPCA_COMPONENTS)
     features = extract_shape_features(fdata, fpca, include_derivatives=config.INCLUDE_DERIVATIVES)
     y_train = train_ret.shift(-1).iloc[lookback-1:len(samples)+lookback-1].values
@@ -206,7 +206,7 @@ def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
 
     test_samples = create_window_samples(test_ret, lookback)
     if len(test_samples) > 0:
-        test_fdata = create_fdatagrid(test_samples, n_basis=n_basis, smoothing_penalty=config.SMOOTHING_PENALTY)
+        test_fdata = create_fdatagrid(test_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY)
         test_features = extract_shape_features(test_fdata, fpca, include_derivatives=config.INCLUDE_DERIVATIVES)
         latest_features = test_features.iloc[-1:]
 
