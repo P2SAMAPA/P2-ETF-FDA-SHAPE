@@ -7,17 +7,18 @@ from skfda import FDataGrid
 from skfda.representation.basis import BSplineBasis
 from skfda.preprocessing.smoothing import BasisSmoother
 from skfda.preprocessing.dim_reduction import FPCA
-from sklearn.preprocessing import StandardScaler
 
 
 def create_fdatagrid(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
     """
-    Smooth a multivariate time series (n_samples, n_features, window_size) into functional data.
+    Smooth a multivariate time series into functional data.
     data shape: (n_samples, n_features, window_size) or (n_samples, window_size) for univariate.
     Returns: FDataGrid of smoothed curves.
     """
+    # Ensure data is 3D: (n_samples, n_features, window_size)
     if data.ndim == 2:
-        data = data[:, np.newaxis, :]  # Add feature dimension
+        # Univariate case: (n_samples, window_size) -> (n_samples, 1, window_size)
+        data = data[:, np.newaxis, :]
 
     n_samples, n_features, window_size = data.shape
 
@@ -27,14 +28,19 @@ def create_fdatagrid(data: np.ndarray, n_basis: int = None, smoothing_parameter:
     basis = BSplineBasis(n_basis=n_basis, domain_range=(0, window_size - 1))
     smoother = BasisSmoother(basis, smoothing_parameter=smoothing_parameter)
 
-    # For multivariate, smooth each feature separately and combine
+    # Smooth each feature separately and combine
     smoothed_curves = []
     for i in range(n_features):
-        fdata = FDataGrid(data[:, i, :], sample_points=np.arange(window_size))
+        # Extract feature i: shape (n_samples, window_size)
+        feature_data = data[:, i, :]
+        fdata = FDataGrid(feature_data, sample_points=np.arange(window_size))
         smoothed = smoother.fit_transform(fdata)
+        # smoothed.data_matrix is (n_samples, window_size)
         smoothed_curves.append(smoothed.data_matrix)
 
-    smoothed_array = np.stack(smoothed_curves, axis=1)  # (n_samples, n_features, window_size)
+    # Stack along feature dimension: list of (n_samples, window_size) -> (n_samples, n_features, window_size)
+    smoothed_array = np.stack(smoothed_curves, axis=1)
+
     return FDataGrid(smoothed_array, sample_points=np.arange(window_size))
 
 
@@ -58,10 +64,11 @@ def extract_shape_features(fdata: FDataGrid, fpca: FPCA, include_derivatives: bo
         deriv1 = fdata.derivative()
         deriv2 = deriv1.derivative()
 
-        # Average derivative values over the window (or use end‑point)
+        # Average derivative values over the window
         mean_deriv1 = deriv1.data_matrix.mean(axis=2).squeeze()
         mean_deriv2 = deriv2.data_matrix.mean(axis=2).squeeze()
 
+        # Ensure we have 2D arrays: (n_samples, n_features)
         if mean_deriv1.ndim == 1:
             mean_deriv1 = mean_deriv1[:, np.newaxis]
             mean_deriv2 = mean_deriv2[:, np.newaxis]
