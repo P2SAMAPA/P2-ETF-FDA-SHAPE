@@ -4,7 +4,6 @@ Functional Data Analysis: B‑spline smoothing, fPCA, and shape features.
 import numpy as np
 import pandas as pd
 from scipy.interpolate import splrep, splev
-from FDApy.representation import DenseArgvals
 from FDApy.preprocessing import UFPCA
 
 
@@ -17,8 +16,7 @@ def smooth_univariate(data: np.ndarray, n_basis: int = None, smoothing_parameter
     x = np.linspace(0, 1, window_size)
     smoothed = np.zeros_like(data)
 
-    # Use splrep with automatic knot selection; s controls smoothness
-    # s = smoothing_parameter * window_size is a reasonable scaling
+    # s controls smoothness; scaling by window_size is reasonable
     s = smoothing_parameter * window_size
 
     for i in range(n_samples):
@@ -31,14 +29,13 @@ def smooth_univariate(data: np.ndarray, n_basis: int = None, smoothing_parameter
 def create_multivariate_fdata(data: np.ndarray, n_basis: int = None, smoothing_parameter: float = 0.1):
     """
     Smooth multivariate data of shape (n_samples, n_features, window_size).
-    Returns a smoothed array and argvals object for FDApy.
+    Returns a smoothed array (n_samples, n_features, window_size).
     """
     if data.ndim == 2:
         data = data[:, np.newaxis, :]
 
     n_samples, n_features, window_size = data.shape
 
-    # n_basis is not used directly with splrep; kept for API compatibility
     smoothed_features = []
     for i in range(n_features):
         feature_data = data[:, i, :]  # (n_samples, window_size)
@@ -46,14 +43,10 @@ def create_multivariate_fdata(data: np.ndarray, n_basis: int = None, smoothing_p
         smoothed_features.append(smoothed)
 
     smoothed_array = np.stack(smoothed_features, axis=1)  # (n_samples, n_features, window_size)
-
-    # Create argvals object for FDApy
-    argvals = DenseArgvals({'input_dim_0': np.linspace(0, 1, window_size)})
-
-    return smoothed_array, argvals
+    return smoothed_array
 
 
-def fit_fpca(smoothed_data: np.ndarray, argvals, n_components: int = 3, refit: bool = True, fpca_models: list = None):
+def fit_fpca(smoothed_data: np.ndarray, n_components: int = 3, refit: bool = True, fpca_models: list = None):
     """
     Fit univariate FPCA per feature using FDApy.
     If refit=False, use provided fpca_models to transform data.
@@ -67,9 +60,9 @@ def fit_fpca(smoothed_data: np.ndarray, argvals, n_components: int = 3, refit: b
         for i in range(n_features):
             feature_data = smoothed_data[:, i, :]  # (n_samples, n_points)
             ufpca = UFPCA(n_components=n_components)
-            ufpca.fit(feature_data, argvals=argvals)
+            ufpca.fit(feature_data)
             fpca_models.append(ufpca)
-            scores = ufpca.transform(feature_data, argvals=argvals)
+            scores = ufpca.transform(feature_data)
             scores_list.append(scores)
         return fpca_models, scores_list
     else:
@@ -79,12 +72,12 @@ def fit_fpca(smoothed_data: np.ndarray, argvals, n_components: int = 3, refit: b
         for i in range(n_features):
             feature_data = smoothed_data[:, i, :]
             ufpca = fpca_models[i]
-            scores = ufpca.transform(feature_data, argvals=argvals)
+            scores = ufpca.transform(feature_data)
             scores_list.append(scores)
         return fpca_models, scores_list
 
 
-def extract_shape_features(smoothed_data: np.ndarray, argvals, fpca_models: list, scores_list: list, include_derivatives: bool = True):
+def extract_shape_features(smoothed_data: np.ndarray, fpca_models: list, scores_list: list, include_derivatives: bool = True):
     """
     Extract shape features: fPCA scores, and optionally first/second derivative values.
     Returns a DataFrame of features.
