@@ -24,10 +24,15 @@ st.markdown('<h1>FDA‑SHAPE — Functional Data Analysis ETF Engine</h1>', unsa
 st.markdown('<p>B‑Spline Smoothing · fPCA · Shape‑Based Prediction · Daily / Global / Adaptive</p>', unsafe_allow_html=True)
 
 # Load results safely
-results = load_latest_result()
-if results is None:
-    st.warning("No training results found. Please run `trainer.py` first to generate the strategy_results.json file.")
+raw = load_latest_result()
+if not isinstance(raw, dict):
+    if raw is None:
+        st.warning("No training results found. Please run `trainer.py` first to generate the strategy_results.json file.")
+    else:
+        st.error("Unexpected data format returned from the results loader. Please check the dataset.")
     st.stop()
+
+results = raw
 
 tab_fi, tab_eq, tab_comb = st.tabs(["FI/Commodities", "Equity Sectors", "Combined Universe"])
 
@@ -114,9 +119,8 @@ def display_card(data, mode="global"):
 for tab, key in [(tab_fi, "fi"), (tab_eq, "equity"), (tab_comb, "combined")]:
     with tab:
         st.subheader(key.capitalize())
-        # Check if this universe has data
         universe_data = results.get(key, {})
-        if not universe_data:
+        if not isinstance(universe_data, dict) or not universe_data:
             st.info(f"No results for {key} universe yet.")
             continue
         daily, global_, adaptive = st.tabs(["📅 Daily (504d)", "🌍 Global", "🔄 Adaptive"])
