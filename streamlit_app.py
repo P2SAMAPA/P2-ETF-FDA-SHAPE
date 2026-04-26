@@ -3,7 +3,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import config
 from push_results import load_latest_result
 from us_calendar import next_trading_day
 
@@ -24,8 +23,13 @@ st.markdown("""
 st.markdown('<h1>FDA‑SHAPE — Functional Data Analysis ETF Engine</h1>', unsafe_allow_html=True)
 st.markdown('<p>B‑Spline Smoothing · fPCA · Shape‑Based Prediction · Daily / Global / Adaptive</p>', unsafe_allow_html=True)
 
-tab_fi, tab_eq, tab_comb = st.tabs(["FI/Commodities", "Equity Sectors", "Combined Universe"])
+# Load results safely
 results = load_latest_result()
+if results is None:
+    st.warning("No training results found. Please run `trainer.py` first to generate the strategy_results.json file.")
+    st.stop()
+
+tab_fi, tab_eq, tab_comb = st.tabs(["FI/Commodities", "Equity Sectors", "Combined Universe"])
 
 def safe_float(value):
     if value is None:
@@ -37,28 +41,30 @@ def safe_float(value):
 
 def format_pct(value):
     v = safe_float(value)
-    if v is None or np.isnan(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
         return "—"
     return f"{v*100:.1f}%"
 
 def format_num(value, decimals=2):
     v = safe_float(value)
-    if v is None or np.isnan(v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
         return "—"
     return f"{v:.{decimals}f}"
 
 def display_metrics(metrics):
+    if not metrics:
+        return
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.markdown('<div class="metric-card"><div class="metric-label">ANN RETURN</div><div class="metric-value">{}</div></div>'.format(format_pct(metrics.get("ann_return"))), unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">ANN RETURN</div><div class="metric-value">{format_pct(metrics.get("ann_return"))}</div></div>', unsafe_allow_html=True)
     with col2:
-        st.markdown('<div class="metric-card"><div class="metric-label">ANN VOL</div><div class="metric-value">{}</div></div>'.format(format_pct(metrics.get("ann_vol"))), unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">ANN VOL</div><div class="metric-value">{format_pct(metrics.get("ann_vol"))}</div></div>', unsafe_allow_html=True)
     with col3:
-        st.markdown('<div class="metric-card"><div class="metric-label">SHARPE</div><div class="metric-value">{}</div></div>'.format(format_num(metrics.get("sharpe"))), unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">SHARPE</div><div class="metric-value">{format_num(metrics.get("sharpe"))}</div></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown('<div class="metric-card"><div class="metric-label">MAX DD</div><div class="metric-value">{}</div></div>'.format(format_pct(metrics.get("max_dd"))), unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">MAX DD</div><div class="metric-value">{format_pct(metrics.get("max_dd"))}</div></div>', unsafe_allow_html=True)
     with col5:
-        st.markdown('<div class="metric-card"><div class="metric-label">HIT RATE</div><div class="metric-value">{}</div></div>'.format(format_pct(metrics.get("hit_rate"))), unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">HIT RATE</div><div class="metric-value">{format_pct(metrics.get("hit_rate"))}</div></div>', unsafe_allow_html=True)
 
 def display_predicted_returns_table(all_pred_returns: dict):
     if not all_pred_returns:
@@ -71,7 +77,7 @@ def display_predicted_returns_table(all_pred_returns: dict):
 
 def display_card(data, mode="global"):
     if not data or not data.get("ticker"):
-        st.info("⏳ Waiting for training output...")
+        st.info(f"No {mode} training data available yet.")
         return
     ticker = data.get("ticker")
     pred_return = data.get("pred_return")
@@ -84,7 +90,7 @@ def display_card(data, mode="global"):
         st.markdown(f'<div style="font-size: 1.5rem;">Predicted Return: {format_pct(pred_return)}</div>', unsafe_allow_html=True)
     st.markdown(f'<div style="opacity: 0.8;">Signal for {next_day.strftime("%Y-%m-%d")} · Generated {gen_time}</div>', unsafe_allow_html=True)
     st.markdown(f'<div style="opacity: 0.8;">Source: {mode} Training</div>', unsafe_allow_html=True)
-    if mode == "Global" or mode == "Daily":
+    if mode in ("Global", "Daily"):
         window = data.get("optimal_window", "—")
         st.markdown(f'<div style="opacity: 0.8;">Optimal Window: {window} days</div>', unsafe_allow_html=True)
     else:
@@ -92,7 +98,10 @@ def display_card(data, mode="global"):
         cp_date = data.get("change_point_date", "—")
         st.markdown(f'<div style="opacity: 0.8;">Adaptive Window: {window} days</div>', unsafe_allow_html=True)
         st.markdown(f'<div style="opacity: 0.8;">Change Point: {cp_date}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div style="opacity: 0.8;">Test: {data.get("test_start", "")} → {data.get("test_end", "")} ({metrics.get("n_days", "—")} days)</div>', unsafe_allow_html=True)
+    test_start = data.get("test_start", "")
+    test_end = data.get("test_end", "")
+    n_days = metrics.get("n_days", "—")
+    st.markdown(f'<div style="opacity: 0.8;">Test: {test_start} → {test_end} ({n_days} days)</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     display_metrics(metrics)
@@ -105,10 +114,15 @@ def display_card(data, mode="global"):
 for tab, key in [(tab_fi, "fi"), (tab_eq, "equity"), (tab_comb, "combined")]:
     with tab:
         st.subheader(key.capitalize())
+        # Check if this universe has data
+        universe_data = results.get(key, {})
+        if not universe_data:
+            st.info(f"No results for {key} universe yet.")
+            continue
         daily, global_, adaptive = st.tabs(["📅 Daily (504d)", "🌍 Global", "🔄 Adaptive"])
         with daily:
-            display_card(results.get(key, {}).get("daily", {}), "Daily")
+            display_card(universe_data.get("daily", {}), "Daily")
         with global_:
-            display_card(results.get(key, {}).get("global", {}), "Global")
+            display_card(universe_data.get("global", {}), "Global")
         with adaptive:
-            display_card(results.get(key, {}).get("adaptive", {}), "Adaptive")
+            display_card(universe_data.get("adaptive", {}), "Adaptive")
