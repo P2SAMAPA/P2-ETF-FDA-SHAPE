@@ -1,9 +1,7 @@
 """ Global (with CV window selection), Daily, and Adaptive Window training. """
 import os
-import json
 import numpy as np
 import pandas as pd
-from datetime import datetime
 from sklearn.metrics import mean_squared_error
 import config
 from data_manager import load_master_data, prepare_data, get_universe_returns
@@ -43,7 +41,6 @@ def create_window_samples(returns: pd.DataFrame, window_size: int):
 
 def _get_latest_prediction(full_returns: pd.DataFrame, window: int,
                            fpca_models: list, predictors: dict, n_basis: int) -> dict:
-    # Extract the latest window of returns (exclude macro columns)
     tickers = [col.replace("_ret", "") for col in full_returns.columns
                if col not in config.MACRO_COLS and col.endswith("_ret")]
     returns_only = full_returns[[f"{t}_ret" for t in tickers]]
@@ -65,7 +62,6 @@ def _get_latest_prediction(full_returns: pd.DataFrame, window: int,
         include_derivatives=config.INCLUDE_DERIVATIVES
     )
 
-    # Add macro features (current values)
     macro_cols = [c for c in config.MACRO_COLS if c in full_returns.columns]
     if macro_cols:
         macro_vals = full_returns[macro_cols].iloc[-1].values.reshape(1, -1)
@@ -78,7 +74,6 @@ def _get_latest_prediction(full_returns: pd.DataFrame, window: int,
             pred_returns[ticker] = pred.predict(latest_features)[0]
         except Exception:
             pred_returns[ticker] = 0.0
-
     return pred_returns
 
 
@@ -111,7 +106,6 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
             train_smoothed, fpca_models, train_scores_list,
             include_derivatives=config.INCLUDE_DERIVATIVES
         )
-        # Add macro features to training features
         macro_cols = [c for c in config.MACRO_COLS if c in train_ret.columns]
         if macro_cols:
             macro_train = train_ret[macro_cols].iloc[window - 1:len(train_samples) + window - 1].reset_index(drop=True)
@@ -200,7 +194,6 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
 
 
 def train_daily(universe: str, returns: pd.DataFrame) -> dict:
-    """Daily mode: train on the most recent DAILY_LOOKBACK days with CV window."""
     print(f"\n--- Daily Training (504d): {universe} ---")
     daily_ret = returns.iloc[-config.DAILY_LOOKBACK:]
     if len(daily_ret) < config.MIN_TRAIN_DAYS:
@@ -393,10 +386,7 @@ def main():
             "adaptive": train_adaptive(universe_name, returns)
         }
 
-    with open("strategy_results.json", "w") as f:
-        json.dump(results, f, indent=2, default=str)
-
-    push_daily_result("strategy_results.json")
+    push_daily_result(results)          # FIX: pass the dict, not a filename
     print("\n=== Run Complete ===")
 
 
