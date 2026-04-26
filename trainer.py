@@ -43,9 +43,15 @@ def create_window_samples(returns: pd.DataFrame, window_size: int):
 
 def _get_latest_prediction(full_returns: pd.DataFrame, window: int,
                            fpca_models: list, predictors: dict, n_basis: int) -> dict:
-    latest_window = full_returns.iloc[-window:]
+    # Extract the latest window of returns (exclude macro columns)
+    tickers = [col.replace("_ret", "") for col in full_returns.columns
+               if col not in config.MACRO_COLS and col.endswith("_ret")]
+    returns_only = full_returns[[f"{t}_ret" for t in tickers]]
+    latest_window = returns_only.iloc[-window:]
+
     if len(latest_window) < window:
         return {}
+
     latest_array = latest_window.values.T[np.newaxis, :, :]
     latest_smoothed = create_multivariate_fdata(
         latest_array, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
@@ -58,18 +64,21 @@ def _get_latest_prediction(full_returns: pd.DataFrame, window: int,
         latest_smoothed, fpca_models, latest_scores,
         include_derivatives=config.INCLUDE_DERIVATIVES
     )
-    # Add macro features (current row)
-    macro_vals = full_returns.iloc[-1][config.MACRO_COLS].values.reshape(1, -1)
-    latest_features = pd.concat([
-        latest_features,
-        pd.DataFrame(macro_vals, columns=config.MACRO_COLS, index=latest_features.index)
-    ], axis=1)
+
+    # Add macro features (current values)
+    macro_cols = [c for c in config.MACRO_COLS if c in full_returns.columns]
+    if macro_cols:
+        macro_vals = full_returns[macro_cols].iloc[-1].values.reshape(1, -1)
+        macro_df = pd.DataFrame(macro_vals, columns=macro_cols, index=latest_features.index)
+        latest_features = pd.concat([latest_features, macro_df], axis=1)
+
     pred_returns = {}
     for ticker, pred in predictors.items():
         try:
             pred_returns[ticker] = pred.predict(latest_features)[0]
         except Exception:
             pred_returns[ticker] = 0.0
+
     return pred_returns
 
 
@@ -102,6 +111,12 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
             train_smoothed, fpca_models, train_scores_list,
             include_derivatives=config.INCLUDE_DERIVATIVES
         )
+        # Add macro features to training features
+        macro_cols = [c for c in config.MACRO_COLS if c in train_ret.columns]
+        if macro_cols:
+            macro_train = train_ret[macro_cols].iloc[window - 1:len(train_samples) + window - 1].reset_index(drop=True)
+            train_features = pd.concat([train_features.reset_index(drop=True), macro_train], axis=1)
+            macro_val = val_ret[macro_cols].iloc[window - 1:len(val_samples) + window - 1].reset_index(drop=True)
         val_smoothed = create_multivariate_fdata(
             val_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
         )
@@ -113,6 +128,9 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
             val_smoothed, fpca_models, val_scores_list,
             include_derivatives=config.INCLUDE_DERIVATIVES
         )
+        if macro_cols:
+            val_features = pd.concat([val_features.reset_index(drop=True), macro_val], axis=1)
+
         y_train = train_ret.shift(-1).iloc[window - 1:len(train_samples) + window - 1].values
         y_val = val_ret.shift(-1).iloc[window - 1:len(val_samples) + window - 1].values
         val_preds = np.zeros_like(y_val)
@@ -147,6 +165,11 @@ def train_global(universe: str, returns: pd.DataFrame) -> dict:
         smoothed_data, fpca_models, scores_list,
         include_derivatives=config.INCLUDE_DERIVATIVES
     )
+    macro_cols = [c for c in config.MACRO_COLS if c in train_val_ret.columns]
+    if macro_cols:
+        macro_vals = train_val_ret[macro_cols].iloc[best_window - 1:len(samples) + best_window - 1].reset_index(drop=True)
+        features = pd.concat([features.reset_index(drop=True), macro_vals], axis=1)
+
     y_all = train_val_ret.shift(-1).iloc[best_window - 1:len(samples) + best_window - 1].values
     predictors = {}
     for i, ticker in enumerate(tickers):
@@ -206,6 +229,11 @@ def train_daily(universe: str, returns: pd.DataFrame) -> dict:
             train_smoothed, fpca_models, train_scores_list,
             include_derivatives=config.INCLUDE_DERIVATIVES
         )
+        macro_cols = [c for c in config.MACRO_COLS if c in train_ret.columns]
+        if macro_cols:
+            macro_train = train_ret[macro_cols].iloc[window - 1:len(train_samples) + window - 1].reset_index(drop=True)
+            train_features = pd.concat([train_features.reset_index(drop=True), macro_train], axis=1)
+            macro_val = val_ret[macro_cols].iloc[window - 1:len(val_samples) + window - 1].reset_index(drop=True)
         val_smoothed = create_multivariate_fdata(
             val_samples, n_basis=n_basis, smoothing_parameter=config.SMOOTHING_PENALTY
         )
@@ -217,6 +245,9 @@ def train_daily(universe: str, returns: pd.DataFrame) -> dict:
             val_smoothed, fpca_models, val_scores_list,
             include_derivatives=config.INCLUDE_DERIVATIVES
         )
+        if macro_cols:
+            val_features = pd.concat([val_features.reset_index(drop=True), macro_val], axis=1)
+
         y_train = train_ret.shift(-1).iloc[window - 1:len(train_samples) + window - 1].values
         y_val = val_ret.shift(-1).iloc[window - 1:len(val_samples) + window - 1].values
         val_preds = np.zeros_like(y_val)
@@ -248,6 +279,11 @@ def train_daily(universe: str, returns: pd.DataFrame) -> dict:
         smoothed_data, fpca_models, scores_list,
         include_derivatives=config.INCLUDE_DERIVATIVES
     )
+    macro_cols = [c for c in config.MACRO_COLS if c in daily_ret.columns]
+    if macro_cols:
+        macro_vals = daily_ret[macro_cols].iloc[best_window - 1:len(samples) + best_window - 1].reset_index(drop=True)
+        features = pd.concat([features.reset_index(drop=True), macro_vals], axis=1)
+
     y_all = daily_ret.shift(-1).iloc[best_window - 1:len(samples) + best_window - 1].values
     predictors = {}
     for i, ticker in enumerate(tickers):
@@ -278,7 +314,6 @@ def train_daily(universe: str, returns: pd.DataFrame) -> dict:
 
 
 def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
-    # (unchanged from original)
     print(f"\n--- Adaptive Training: {universe} ---")
     tickers = [col.replace("_ret", "") for col in returns.columns if col not in config.MACRO_COLS]
     cp_date = universe_adaptive_start_date(returns)
@@ -304,6 +339,11 @@ def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
         smoothed_data, fpca_models, scores_list,
         include_derivatives=config.INCLUDE_DERIVATIVES
     )
+    macro_cols = [c for c in config.MACRO_COLS if c in train_ret.columns]
+    if macro_cols:
+        macro_vals = train_ret[macro_cols].iloc[lookback - 1:len(samples) + lookback - 1].reset_index(drop=True)
+        features = pd.concat([features.reset_index(drop=True), macro_vals], axis=1)
+
     y_train = train_ret.shift(-1).iloc[lookback - 1:len(samples) + lookback - 1].values
     predictors = {}
     for i, ticker in enumerate(tickers):
@@ -314,6 +354,7 @@ def train_adaptive(universe: str, returns: pd.DataFrame) -> dict:
         y_tr = y_train[valid, i]
         pred = ShapePredictor().fit(X_tr, y_tr)
         predictors[ticker] = pred
+
     pred_returns = _get_latest_prediction(returns, lookback, fpca_models, predictors, n_basis)
     if pred_returns:
         best_ticker = max(pred_returns, key=pred_returns.get)
