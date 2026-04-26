@@ -1,17 +1,19 @@
-"""
-Lightweight predictive model using Ridge regression.
-"""
+""" Lightweight predictive model using HistGradientBoostingRegressor. """
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import RidgeCV
+from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
-import config
-
 
 class ShapePredictor:
     def __init__(self):
         self.scaler = StandardScaler()
-        self.model = RidgeCV(alphas=config.RIDGE_ALPHAS, cv=5)
+        self.model = HistGradientBoostingRegressor(
+            loss='squared_error',
+            max_iter=200,
+            max_depth=6,
+            learning_rate=0.1,
+            random_state=42
+        )
         self.feature_names = None
 
     def fit(self, X: pd.DataFrame, y: pd.Series):
