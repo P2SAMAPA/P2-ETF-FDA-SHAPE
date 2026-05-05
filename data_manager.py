@@ -24,7 +24,6 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     print("DataFrame index dtype:", df.index.dtype)
 
     if pd.api.types.is_datetime64_any_dtype(df.index):
-        print("Index is already datetime. Using as is.")
         df = df.sort_index()
         return compute_returns(df)
 
@@ -38,36 +37,19 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
             unit = "s"
         else:
             unit = None
-
         if unit is not None:
-            print(f"Converting numeric index to datetime using unit='{unit}'.")
             df.index = pd.to_datetime(df.index, unit=unit)
             df = df.sort_index()
             return compute_returns(df)
 
     possible_time_cols = ["__index_level_0__", "date", "Date", "timestamp", "time", "index"]
-    time_col = None
-    for col in possible_time_cols:
-        if col in df.columns:
-            time_col = col
-            break
+    time_col = next((c for c in possible_time_cols if c in df.columns), None)
 
     if time_col is not None:
-        print(f"Found timestamp column: {time_col}")
         if pd.api.types.is_numeric_dtype(df[time_col]):
             sample_val = df[time_col].iloc[0]
-            if sample_val > 1e12:
-                unit = "ns"
-            elif sample_val > 1e10:
-                unit = "ms"
-            elif sample_val > 1e9:
-                unit = "s"
-            else:
-                unit = None
-            if unit:
-                df["date"] = pd.to_datetime(df[time_col], unit=unit)
-            else:
-                df["date"] = pd.to_datetime(df[time_col])
+            unit = "ns" if sample_val > 1e12 else "ms" if sample_val > 1e10 else "s" if sample_val > 1e9 else None
+            df["date"] = pd.to_datetime(df[time_col], unit=unit) if unit else pd.to_datetime(df[time_col])
         else:
             df["date"] = pd.to_datetime(df[time_col])
         df = df.set_index("date")
@@ -80,19 +62,17 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
         try:
             converted = pd.to_datetime(df[col])
             if converted.notna().all():
-                print(f"Column '{col}' can be parsed as datetime. Using it.")
                 df["date"] = converted
-                df = df.set_index("date")
-                df = df.drop(columns=[col])
-                df = df.sort_index()
+                df = df.set_index("date").drop(columns=[col]).sort_index()
                 return compute_returns(df)
-        except:
+        except Exception:
             continue
 
     raise KeyError("Unable to locate date information.")
 
 
 def compute_returns(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute log returns for all price columns."""
     price_cols = [col for col in df.columns if col not in config.MACRO_COLS]
     for col in price_cols:
         df[f"{col}_ret"] = np.log(df[col] / df[col].shift(1))
