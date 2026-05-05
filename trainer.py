@@ -72,9 +72,14 @@ def create_window_samples(returns: pd.DataFrame, window_size: int) -> np.ndarray
     """
     Returns array of shape (n_samples, n_features, window_size).
     Sample i covers returns[i : i+window_size].
+
+    FIX: stop one short (range len-window, not len-window+1) so every
+    sample has a valid forward-return target at index i+window_size.
+    The original +1 produced a final window whose target (i+window_size)
+    would be out of bounds, causing the boolean mask length mismatch.
     """
     data    = returns.values
-    samples = [data[i : i + window_size].T for i in range(len(data) - window_size + 1)]
+    samples = [data[i : i + window_size].T for i in range(len(data) - window_size)]
     return np.array(samples)
 
 
